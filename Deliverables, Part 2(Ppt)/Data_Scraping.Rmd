@@ -1,0 +1,512 @@
+---
+title: "Data Scraping"
+author: "Linus Jen"
+date: "8/6/2020"
+output: pdf_document
+---
+
+Everything here was used to scrape and clean the data used for my model. Data will be specified in the beginning where it was scraped from.
+
+Caution: Do NOT try to knit this to a pdf. It will take awhile to run, possibly crashing your computer
+
+### Packages
+
+```{r, warning = FALSE, message = FALSE}
+library(httr)
+library(dplyr)
+library(lubridate)
+library(rvest)
+library(rvest)
+library(data.table)
+library(knitr)
+library(stringr)
+library(writexl)
+library(readxl)
+```
+
+### Scraping Attendance
+
+Here, we want to gather the basic statistics for each game. We will use the prior 5 seasons, from 2013-2018, as training data, to predict for the 2018-2019 season.
+
+Source: https://www.basketball-reference.com/teams/LAC/
+
+```{r}
+# Store the season titles 
+seasons = c("2013-14", "2014-15", "2015-16", "2016-17", "2017-18", "2018-19")
+szn_year = c(2013, 2014, 2015, 2016, 2017, 2018)
+
+
+session = html_session("https://www.basketball-reference.com/teams/LAC/")
+
+# Create a data frame that will hold the home games data
+home_data_Clips = data.frame()
+
+# Loop over each season
+for(i in 1:length(seasons)) {
+  # Create an empty vector for attendances, opponent's wins, and opponent's losses
+  attendance = c()
+  op_W = c()
+  op_L = c()
+  
+  # Go to each individual season, save the HTML
+  sched_page = session %>% follow_link(seasons[i]) %>% follow_link('Schedule & Results') %>% read_html()
+  
+  # Create a date column for the full year's schedule
+  date = sched_page %>% html_nodes("#games th+ td") %>% html_text() %>% str_remove("\\w{3},\\s") %>% mdy()
+  
+  # Save the link to each boxscore
+  score_link = sched_page %>% html_nodes("#games .center a") %>% html_attr("href")
+
+  # Fix the link so that it can be easily accessed later on
+  score_link = paste("https://www.basketball-reference.com", score_link, sep = "")
+
+  # If the game is home or awa
+  Location = sched_page %>% html_nodes("#games td:nth-child(6)") %>% html_text()
+  Location = ifelse(Location == "@", "Away", "Home")
+  
+  # Who the Clippers are playing
+  Opponent = sched_page %>% html_nodes("#games .center+ td.left") %>% html_text()
+
+  # Save the wins, but note that we start at 0
+  win_col = sched_page %>% html_nodes("#games td:nth-child(12)") %>% html_text() %>% as.numeric()
+  win_col = c(0, win_col[-length(win_col)])
+
+  # Save the losses, but note that we start at 0
+  lose_col = sched_page %>% html_nodes("#games td:nth-child(13)") %>% html_text() %>% as.numeric()
+  lose_col = c(0, lose_col[-length(lose_col)])
+
+  # Svae the streak column
+  streak_OG = sched_page %>% html_nodes("#games td.right+ .left") %>% html_text()
+
+  # Win or loss?
+  result = str_extract(streak_OG, "\\w")
+
+  # Are they on a win or lose streak?
+  own_streak = as.numeric(str_extract(streak_OG, "\\d"))
+  
+  # Fix the streaks so that it has the incoming game streak
+  own_streak = ifelse(result == "L", own_streak * -1, own_streak)
+  own_streak = c(0, own_streak[-length(own_streak)])
+
+  # Create our data frame
+  full_Clips_szn = data.frame(date, score_link, Location, Opponent, win_col, lose_col, result, own_streak, season = rep(szn_year[i], length(date)))
+
+  # Now, filter it down so that we only have the games at home
+  Clips_home = full_Clips_szn[full_Clips_szn$Location == "Home",]
+  
+  
+  # Now, to follow the links to pull attendances
+  for(l in 1:nrow(Clips_home)) {
+    # Follow the link
+    score_html = read_html(Clips_home$score_link[l])
+    
+    # Create a placeholder for the attendance found
+    holder = score_html %>% html_nodes("#all_box-LAC-game-advanced+ div div:nth-child(3)") %>% html_text() %>% str_remove("Attendance:\\s") %>% str_remove(",") %>% as.numeric()
+    attendance = c(attendance, holder)
+    
+    # Also, we want to save the opposing team's win/losses
+    rec = score_html %>% html_nodes("div:nth-child(1) .scores+ div") %>% html_text()
+    rec = rec %>% str_replace("-", ",")
+    holder_w = rec[1] %>% str_extract("^\\d+") %>% str_remove(",") %>% str_trim() %>% as.numeric()
+    holder_l = rec[1] %>% str_extract("\\d+$") %>% str_remove(",") %>% str_trim() %>% as.numeric()
+    
+    # Save the wins and losses
+    op_W = c(op_W, holder_w)
+    op_L = c(op_L, holder_l)
+  }
+  
+  # Add attendance levels, and opponents record to the data frame
+  Clips_home$attendance = attendance
+  Clips_home$op_W = op_W
+  Clips_home$op_L = op_L
+  
+  # Add this to the end of the Clippers home data set
+  home_data_Clips = rbind(home_data_Clips, Clips_home)
+}
+closeAllConnections()
+
+# Clean the data
+clean_home_Clips = home_data_Clips %>% select(date, Opponent, win_col, lose_col, result, own_streak, season, attendance, op_W, op_L) %>% mutate(win_perc = win_col / (win_col + lose_col), op_win_perc = op_W / (op_W + op_L))
+
+# Ensure that there are no NA's present in the win percentage columns
+clean_home_Clips$win_perc[is.na(clean_home_Clips$win_perc)] = 0
+clean_home_Clips$op_win_perc[is.na(clean_home_Clips$op_win_perc)] = 0
+
+# Save as an excel file
+write_xlsx(clean_home_Clips, "Clipper_home_schedule_5yrs.xlsx")
+```
+
+
+### Additional Datasets
+
+Now, I'll be looking into additional datasets to scrape and include for our model.
+
+The first one I will use is the Vegas Win Odds, like that used in the data given. We found in the earlier project that the odds do seem to have some correlation with the number of attendees.
+
+Source: https://www.basketball-reference.com/
+
+```{r}
+# Save the seasons that we care about
+seasons = c("2013-14", "2014-15", "2015-16", "2016-17", "2017-18", "2018-19")
+szn_year = c(2013, 2014, 2015, 2016, 2017, 2018)
+
+# Create an empty data frame to store the info
+odds_df = data.frame()
+
+# Start a session
+session = html_session("https://www.basketball-reference.com/leagues/")
+
+# Create a loop over each season
+for(i in 1:length(seasons)) {
+  # First, create our html page to scrub
+  odds_page = session %>% follow_link(seasons[i]) %>% follow_link("Preseason Odds") %>% read_html()
+  
+  # Draw the teams and odds information
+  team = odds_page %>% html_nodes("th.left") %>% html_text()
+  odds = odds_page %>% html_nodes("td.center") %>% html_text() %>% as.numeric()
+  
+  # Store this as a data frame, and save this under odds_df
+  odds_df = rbind(odds_df, data.frame(team, odds, season = rep(szn_year[i], length(team))))
+}
+closeAllConnections()
+
+# Save this data set
+write_xlsx(odds_df, "seasonal_odds_5yrs.xlsx")
+```
+
+Next up, I wanted to use the jersey sales to tell the popularity of each team. To do this, I would find the top ten players with the most jersey sales, join this with the roster data. Note that because there isn't a single website to draw the information, multiple websites will be used.
+
+```{r}
+# Pull the player names for 2012-2013 season
+player_2012_jersey_sales = read_html("https://www.cnbc.com/2012/04/26/The-NBAs-Best-Selling-Jerseys-2012.html") %>% html_nodes(".group+ .ArticleBody-subtitle") %>% html_text() %>% str_extract("\\w+\\s\\w+")
+
+# Pull the player names for the 2013/14 season
+player_2013_jersey_sales = read_html("https://www.cnbc.com/2013/10/03/top-selling-nba-jerseys-king-james-ranks-first.html") %>% html_nodes(".BasicTable-numData+ .BasicTable-textData") %>% html_text() %>% str_trim()
+
+# 2014 player jersey data
+player_2014_jersey_sales = read_html("https://www.cardboardconnection.com/selling-2014-nba-jerseys") %>% html_nodes("p+ h3 , h3:nth-child(7)") %>% html_text() %>% str_extract("\\w+\\s\\w+") %>% str_trim()
+
+# 2015 player jersey data
+player_2015_jersey_sales = read_html("https://www.forbes.com/sites/maurybrown/2016/07/07/the-most-popular-nba-jerseys-and-team-merchandise-for-2015-16-season/#5b11cf187eff") %>% html_nodes("ol:nth-child(15) li") %>% html_text() %>% str_extract("\\w+\\s\\w+") %>% str_trim()
+
+# 2016 player jersey data
+player_2016_jersey_sales = read_html("https://hypebeast.com/2017/4/highest-selling-nba-player-jersey-2016-17-season") %>% html_nodes("p:nth-child(2) b") %>% html_text() %>% str_extract("\\w+\\s\\w+")
+
+# 2017 player jersey data
+player_2017_jersey_pt1 = read_html("http://sokkaa.com/top-10-most-popular-nba-jerseys-based-on-nba-store-sales-in-2017-18-season/") %>% html_nodes(".td-post-content h3") %>% html_text() %>% str_extract("\\w+\\s\\w+") %>% str_trim()
+
+player_2017_jersey_pt2 = read_html("http://sokkaa.com/top-10-most-popular-nba-jerseys-based-on-nba-store-sales-in-2017-18-season/2/") %>% html_nodes(".td-post-content h3") %>% html_text() %>% str_extract("\\w+\\s\\w+") %>% str_trim()
+
+# Join that together
+player_2017_jersey_sales = c(player_2017_jersey_pt1, player_2017_jersey_pt2)
+
+# Column for seasons
+season = c(rep(2013, length(player_2012_jersey_sales)), rep(2014, length(player_2013_jersey_sales)), rep(2015, length(player_2014_jersey_sales)), rep(2016, length(player_2015_jersey_sales)), rep(2017, length(player_2016_jersey_sales)), rep(2018, length(player_2017_jersey_sales)))
+
+# Create another column for all the other players
+pop_players = c(player_2012_jersey_sales, player_2013_jersey_sales, player_2014_jersey_sales, player_2015_jersey_sales, player_2016_jersey_sales, player_2017_jersey_sales)
+
+# Create our dataframe
+pop_jerseys_szn = data.frame(pop_players, season, pop_jerseys = rep(T, length(pop_players)))
+write_xlsx(pop_jerseys_szn, "popular_jerseys_5yrs.xlsx")
+```
+
+In addition to this, I think a good way to see how popular a team is is to use the number of All-Stars from a prior year on the following year's team. As fans make up 50% of the All-Star voting process (and made up 100% of it before the change in the 2016-17 season). Note that years will be offset by 1 year; for example, the All Stars from the 2012-2013 season will be used as All Stars for the 2013-14 team rosters
+
+```{r}
+# Create our vector of the important seasons and the years
+szn_year = c(2013, 2014, 2015, 2016, 2017, 2018)
+seasons = as.character(2013:2018)
+
+# Start a session
+session = html_session("https://www.basketball-reference.com/allstar/")
+
+# Create a blank All Star data frame to hold the year, player, and if they were an all star that year (which will all be true)
+all_star_data = data.frame()
+
+# Loop over each season
+for(i in 1:length(seasons)) {
+  # Save the html page
+  szn_page = session %>% follow_link(seasons[i]) %>% read_html()
+  
+  # Pull the all star players' names
+  all_star_players = szn_page %>% html_nodes("th a") %>% html_text() %>% str_trim()
+  
+  # Create a year vector
+  season = rep(szn_year[i], length(all_star_players))
+  
+  # Create a T/F column of if they were an All Star that year
+  all_star_status = rep(T, length(all_star_players))
+  
+  # Add this to our data frame
+  holder = data.frame(all_star_players, season, all_star_status)
+  print(holder)
+  all_star_data = rbind(all_star_data, holder)
+}
+
+# Save this file
+write_xlsx(all_star_data, "all_star_data.xlsx")
+```
+
+Lastly, let's create the roster of each NBA team per year
+
+```{r}
+# Seasons we want to pull from
+seasons = c("2013-14", "2014-15", "2015-16", "2016-17", "2017-18", "2018-19")
+szn_year = c(2013, 2014, 2015, 2016, 2017, 2018)
+
+# Create our empty data frame
+roster_5yrs = data.frame()
+
+# start our session
+session = html_session("https://www.basketball-reference.com/leagues/")
+
+# Now, loop over each season
+for(i in 1:length(seasons)) {
+  # First, go to the correct season, and get the teams as a vector
+  szn_page = session %>% follow_link(seasons[i]) %>% read_html()
+  
+  # Then, pull each team name
+  teams_szn = szn_page %>% html_nodes(".full_table .left") %>% html_text() %>% str_remove("\\*") %>% str_trim()
+  
+  # Create empty roster, year, and team vectors
+  team = c()
+  roster_szn = c()
+  season = c()
+  
+  # Create a new session to minimize traffic
+  new_sesh = html_session(paste("https://www.basketball-reference.com/leagues/NBA_", szn_year[i]+1, ".html", sep = ""))
+  
+  # Now, loop within each team in team_szn
+  for(t in 1:length(teams_szn)) {
+    # Follow the session to the correct team
+    team_page = new_sesh %>% follow_link(teams_szn[t]) %>% read_html()
+    
+    # Pull the names
+    player_names = team_page %>% html_nodes("#roster .center+ .left a") %>% html_text() %>% str_trim()
+    roster_szn = c(roster_szn, player_names)
+    team = c(team, rep(teams_szn[t], length(player_names)))
+    season = c(season, rep(szn_year[i], length(player_names)))
+  }
+  
+  # Finally, add this information to our data frame
+  roster_5yrs = rbind(roster_5yrs, data.frame(team, roster_szn, season))
+}
+
+# Now, to save the roster
+write_xlsx(roster_5yrs, "roster_5yrs.xlsx")
+```
+
+Holidays
+
+Let's pull all the celebrated US Federal Holidays, and see if the games were close to any holidays (<4 day difference).
+
+Source: https://www.calendarpedia.com/holidays/federal-holidays-2013.html
+
+```{r, warning=F}
+# Create the years of interest
+szn_year = as.character(2013:2019)
+
+# Start a session
+session = html_session("https://www.calendarpedia.com/holidays/federal-holidays-2013.html")
+
+# Create an empty holiday vector to hold the dates
+holidays = c()
+
+# Loop over each year to pull in the dataset
+for(i in 1:length(szn_year)) {
+  # Create our html page to pull from
+  hol_page = session %>% follow_link(szn_year[i]) %>% read_html()
+  holi_holder = hol_page %>% html_nodes("div+ div tr~ tr+ tr strong") %>% html_text() %>% mdy() %>% na.omit()
+  
+  # Add values back to holidays
+  holidays = ymd(holidays, holi_holder)
+}
+
+# This will be used below
+```
+
+Championships
+
+We also want to see if the number of prior championships impact the attendance levels.
+
+Source: https://blog.ticketcity.com/nba/nba-finals-champions/
+
+```{r}
+# Create our html to scan
+champ_history = read_html("https://blog.ticketcity.com/nba/nba-finals-champions/")
+
+# Empty vectors for storage
+season = champ_history %>% html_nodes("tr~ tr+ tr strong") %>% html_text() %>% as.numeric() - 1
+team = champ_history %>% html_nodes("tr~ tr+ tr td:nth-child(2)") %>% html_text()
+
+# Create a function to convert the old names to new names
+teamname_cleaner = function(team_name) {
+  # The Bullets used to be the Washington Wizards
+  if(str_detect(team_name, "Bullets")) {
+    team_name = str_replace(team_name, ".*Bullets.*", "Washington Wizards")
+  }
+  if(str_detect(team_name, "Minneapolis")) {
+    team_name = str_replace(team_name, ".*Minneapolis\\s.*", "Los Angeles Lakers")
+  }
+  if(str_detect(team_name, "Royals")) {
+    team_name = str_replace(team_name, ".*Royals.*", "Sacramento Kings")
+  }
+  if(str_detect(team_name, "Supersonics")) {
+    team_name = str_replace(team_name, ".*Supersonics.*", "Oklahoma City Thunder")
+  }
+  if(str_detect(team_name, "Hawks")) {
+    team_name = str_replace(team_name, ".*Hawks.*", "Atlanta Hawks")
+  }
+  if(str_detect(team_name, "Nationals")) {
+    team_name = str_replace(team_name, ".*Nationals.*", "Philadelphia 76ers")
+  }
+  if(str_detect(team_name, "Warriors")) {
+    team_name = str_replace(team_name, ".*Warriors.*", "Golden State Warriors")
+  }
+  team_name
+}
+
+# Apply the function
+for(i in 1:length(team)) {
+  team[i] = teamname_cleaner(team[i])
+}
+
+# Create a data frame to hold this information
+(championships_yearly = data.frame(season, team))
+
+# Now, we want to count the number of championships for each team, per year
+
+# Create our years of interest
+szn_year = 2013:2018
+
+# Create an empty data frame to hold the information
+champ_summary = data.frame()
+
+# Now, for each year prior to the "current" year, we want to summarise the number of games
+for(i in 1:length(szn_year)) {
+  # Subset our data so that it only includes the prior years champions
+  holder = championships_yearly[championships_yearly$season < szn_year[i],]
+  
+  # Group by championships and count the championships
+  holder = holder %>% group_by(team) %>% summarise(championships = n())
+  
+  #Include the season to forecast
+  holder$year = rep(szn_year[i], nrow(holder))
+  
+  # Lastly, add this back to our original data
+  champ_summary = rbind(champ_summary, holder)
+}
+
+# Save this as an Excel file
+write_xlsx(champ_summary, "champ_summary_5yrs.xlsx")
+```
+
+### Data Joining and Cleaning
+
+Combining all the data above into one dataset!
+
+```{r}
+# Pull in the roster, all star data, and popularity jersey data
+roster_5yrs = read_xlsx("roster_5yrs.xlsx")
+all_star_5yrs = read_xlsx("all_star_data.xlsx")
+pop_jerseys_5yrs = read_xlsx("popular_jerseys_5yrs.xlsx")
+odds_5yrs = read_xlsx("seasonal_odds_5yrs.xlsx")
+Clips_home_games = read_xlsx("Clipper_home_schedule_5yrs.xlsx")
+champ_summary = read_xlsx("champ_summary_5yrs.xlsx")
+IG_followers = read_xlsx("IG_followers_overall.xlsx")
+
+# First, join the all_star data with the roster data
+roster_all_star = roster_5yrs %>% left_join(all_star_5yrs, by = c("season", "roster_szn" = "all_star_players"))
+
+# Change it so that all the players that aren't all starts are treated as FALSE
+roster_all_star$all_star_status = ifelse(is.na(roster_all_star$all_star_status), FALSE, TRUE)
+
+# Now, join with the popularity of the jerseys
+roster_pop_star = roster_all_star %>% left_join(pop_jerseys_5yrs, by = c("season", "roster_szn" = "pop_players"))
+
+# Fix it so that if they aren't popular players from jersey sales, the value is FALSE
+roster_pop_star$pop_jerseys = ifelse(is.na(roster_pop_star$pop_jerseys), FALSE, TRUE)
+
+# Now, we summarise the data
+# We will group by the season year, team, and count the number of popular players and all stars per team
+roster_summarized = roster_pop_star %>% group_by(team, season) %>% summarise(all_star_num = sum(all_star_status), pop_team = sum(pop_jerseys))
+
+# Join in our Vegas odds to this!
+predictor_data = roster_summarized %>% left_join(odds_5yrs, by = c("season", "team"))
+
+# Lastly, join this with our original dataset of all the Clipper home games so that it includes the odds, number of all star players, popularity of players, etc.
+final_dataset = Clips_home_games %>% left_join(predictor_data, by = c("season", "Opponent" = "team"))
+
+# Create a vector to add on for the number of days to be a holiday
+# First, create our empty vector
+days_2_holidays = numeric(0)
+
+# Now, loop it over each date
+for(i in 1:nrow(final_dataset)) {
+  days_2_holidays = c(days_2_holidays, min(as.numeric(abs(difftime(final_dataset$date[i], holidays, units = "days")))))
+}
+
+# Lastly, append the columns over
+final_dataset$days_2_holidays = days_2_holidays
+
+# Lastly, use a 3 day difference to determine whether or not a date is close to the holidays
+final_dataset = final_dataset %>% mutate(holiday_close = ifelse(days_2_holidays <= 3, TRUE, FALSE))
+
+# Include the number of championships per team for the competitor
+final_dataset = final_dataset %>% left_join(champ_summary, by = c("season" = "year", "Opponent" = "team"))
+# Add in a 0 if the opposing team has never won a championship
+final_dataset$championships = ifelse(is.na(final_dataset$championships), 0, final_dataset$championships)
+
+# Add in our follower count
+final_dataset = final_dataset %>% left_join(IG_followers, by = c("Opponent" = "NBA Team"))
+
+final_dataset$`Follower Count(millions)` = ifelse(is.na(final_dataset$`Follower Count(millions)`), 0, final_dataset$`Follower Count(millions)`)
+
+# Include total number of games played
+final_dataset = final_dataset %>% mutate(games_played = win_col + lose_col, border_games = ifelse(games_played <= 5, TRUE, FALSE))
+
+# Check to make sure there aren't any NA's
+col_num = length(names(final_dataset))
+
+# Run a loop over each column
+for(i in 1:col_num) {
+  print(sum(is.na(final_dataset[[i]])))
+}
+# Perfect! No NA's!!! Guess it's time to model!
+
+write_xlsx(final_dataset, "final_dataset.xlsx")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

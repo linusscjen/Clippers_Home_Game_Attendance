@@ -1,0 +1,308 @@
+---
+title: "Modeling"
+author: "Linus Jen"
+date: "8/6/2020"
+output: pdf_document
+---
+
+### Packages
+
+```{r, warning=F, message=F}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(readxl)
+library(car)
+library(lubridate)
+```
+
+```{r}
+# Pull our data in
+data = read_xlsx("final_dataset.xlsx")
+
+# Add in a total game column
+data = data %>% mutate(games_played = sum(win_col, lose_col), day_of_week = wday(date), weekday_status = ifelse(day_of_week <= 4, TRUE, FALSE))
+
+names(data)[19] = "Follower_Count_mil"
+```
+
+### "Fixing" the Attendances
+
+To train my model on previous seasons, I scrapped the attendances for past home games. However, when comparing the scraped attendance data for the 2018-19 season with the attendance data given by the Clippers, I couldn't help but notice a large discrepancy between the two. The following code was used to check how similar the data is, and see if there is a common value I can apply to the "real" attendances so that the models can better predict
+
+```{r}
+real_attendees = read_xlsx("attendees_by_game_2018.xlsx")
+test_prelim = data[data$season == "2018",]
+
+ggplot(real_attendees, aes(x = game_number, y = attendees)) + geom_point()
+ggplot(test_prelim, aes(x = date, y = attendance)) + geom_point()
+
+cor(real_attendees$attendees, test_prelim$attendance)
+
+plot(x = real_attendees$game_number, y = (test_prelim$attendance - real_attendees$attendees)/test_prelim$attendance)
+
+plot(x = real_attendees$game_number, y = (test_prelim$attendance - real_attendees$attendees))
+
+data$attendance = data$attendance * 0.5
+```
+
+# We see from the graphs that there is roughly a 50% difference in attendees. Thus, we will multiply all the attendances from our scraped data with 0.5
+
+
+Here, we can break the data into training and testing
+
+```{r}
+# Take a look at the data
+# glimpse(data)
+
+# Create our training and testing data, splitting by the seasons initially
+train_prelim = data[data$season != "2018",]
+test_prelim = data[data$season == "2018",]
+
+# We can further break down the training and testing data at a later time
+
+# Lastly, we have the "attendances" of the 2018-19 season given to us. 
+# Now, we need to standardize our data so that the averages align, as the data # provided by the Clippers does not match that on NBA.com
+
+
+```
+
+### Visualizing the data
+
+Note that the columns of importance are: win_col, lose_col, own_streak, attendance, op_W, op_L, win_perc, op_win_perc, all_star_num, pop_team, and odds.
+
+```{r}
+# First, graph the change in attendance over the past 6 years
+ggplot(data, aes(x = date, y = attendance)) + 
+  geom_line() +
+  labs(title = "Change in Attendance Over Time")
+
+# What is the most striking is that the Clippers consistenly had over 19000
+# attendees per game, but with the 2017/18 season, viewership dramatically
+# dropped. I would attribute this to the loss of Chris Paul that year,
+# and we see that the 2018/19 season has similar views.
+# Thus, I will only use the 2017/18 season to predict the 2018/19 attendance
+
+train_17 = train_prelim[train_prelim$season == "2017",]
+
+# Let's look at the boxplots for weekday_status and attendance
+ggplot(train_17, aes(x = weekday_status, y = attendance)) + 
+  geom_boxplot() +
+  labs(title = "Impact of Games on the Weekday vs. Weekend on Attendance")
+# There doesn't seem to be much difference - do note that there is an increase in attendance during the weekend, but only a minor change
+
+# Here, we'll look at the distribution of games being close to holidays impacting attendance
+ggplot(train_17, aes(x = holiday_close, y = attendance)) + 
+  geom_boxplot() +
+  labs(title = "Impact of Holidays on Attendance")
+# We see that while there does seem to be an impact, it does not seem like much
+
+# Let's try plotting the number of days to a holiday on attendance level
+ggplot(train_17, aes(x = days_2_holidays, y = attendance)) +
+  geom_point(aes(color = holiday_close)) +
+  labs(title = "Holiday Proximity's Impact on Attendance")
+
+# Let's graph the number of championships per team vs. attendance
+ggplot(train_17, aes(x = championships, y = attendance)) +
+  geom_point() +
+  labs(title = "Attendance vs. Championships Won by Opponent")
+# Notice that there does seem to be a correlation between number of championships and attendance
+# Let us see if there is an interaction between these based off holidays
+ggplot(train_17, aes(x = championships, y = attendance)) +
+  geom_point(aes(color = holiday_close)) +
+  labs(title = "Attendance vs. Championships Won by Opponent",
+       subtitle = "Colored by Holiday Proximity")
+# We do see some interaction here, as games over the holidays tend to have a 
+# greater number of attendees
+
+# Now, we check that with the popularity of a team
+ggplot(train_17, aes(x = championships, y = attendance, group = pop_team)) +
+  geom_boxplot(aes(color = pop_team)) +
+  labs(title = "Attendance vs. Championships Won by Opponent",
+       subtitle = "Grouped by number of players with top selling jerseys on the team")
+
+# Now, see if a greater number of all stars from the prior year impacts attendance
+ggplot(train_17, aes(x = championships, y = attendance, group = all_star_num)) +
+  geom_boxplot(aes(color = all_star_num)) +
+  labs(title = "Attendance vs. Championships Won by Opponent",
+       subtitle = "Grouped by number of players with top selling jerseys on the team")
+
+# Let's look at the individual variables with attendance first
+
+# How do the odds of the opposing team influence attendance?
+ggplot(train_17, aes(x = odds, y = attendance)) +
+  geom_point() +
+  labs(title = "Attendance vs. Odds")
+# There seems to be a weak positive relationship between odds and attendance
+
+# Let's create a new column of the transformed data
+invResPlot(lm(attendance ~ odds, data = train_17))
+# It recommends us to use a power of 10 here
+train_17$odds_trans = train_17$odds^.1
+summary(lm(attendance ~ odds_trans, data = train_17))
+
+# Now, let's check the number of championships and its impact on attendance
+ggplot(train_17, aes(x = championships, y = attendance)) +
+  geom_point() +
+  labs(title = "Attendance vs. Championship Won by Opponent")
+# There definitely seems to be a positive, and possibly exponential, relationship here
+# Let's tranform it
+invResPlot(lm(attendance ~ championships, data = train_17))
+# Again, we get a lambda value of 10, so we apply here
+train_17$champ_trans = train_17$championships^10
+summary(lm(attendance ~ I(championships^(1/10)), data = train_17))
+
+
+# Now, let's see how the number of all-stars on the team influences attendance
+ggplot(train_17, aes(x = all_star_num, y = attendance)) +
+  geom_point() +
+  labs(title = "Attendance vs. Opposing All-Stars")
+# We see a similar trend like the last, as there definitely is a positive trend with the number of all stars on the team, and the attendance level
+summary(lm(attendance ~ all_star_num, data = train_17))
+# Let's see if transformations improve this
+invResPlot(lm(attendance ~ all_star_num, data = train_17))
+
+
+# Let's plot the days away from a holiday with attendance
+ggplot(train_17, aes(x = days_2_holidays, y = attendance, group = days_2_holidays)) +
+  geom_boxplot() +
+  labs(title = "Attendance vs. Proximity of Holiday")
+# This doesn't seem to be a good predictor at all
+
+# The distributions are similar as well. Thus, it does not seem like the holidays influence 
+ggplot(train_17, aes(x = holiday_close, y = attendance)) +
+  geom_boxplot() +
+  labs(title = "Attendance vs. Proximity of Holiday")
+# Check weekday
+ggplot(train_17, aes(x = day_of_week, y = attendance)) + 
+  geom_point() +
+  labs(title = "Attendance by Day of the Week")
+
+
+# Let's see how popular teams affect attendance
+ggplot(train_17, aes(x = pop_team, y = attendance)) + 
+  geom_point() + 
+  labs(title = "Attendance vs. Number of Popular Players",
+       subtitle = "Popularity defined by jerseys sold")
+# Similar distribution as before, where the more popular teams garner more fans
+
+# Let's see how follower count for each team affects attendance
+ggplot(train_17, aes(x = Follower_Count_mil, y = attendance)) + 
+  geom_point() + 
+  labs(title = "Attendance vs. Team Followers",
+       subtitle = "Popularity defined by jerseys sold")
+
+ggplot(train_17, aes(x = border_games, y = attendance)) +
+  geom_point() +
+  labs(title = "Attendance vs. Games Near the Start or End of the Season")
+
+ggplot(train_17, aes(x = championships, y = attendance)) + 
+  geom_point(aes(color = holiday_close, group = holiday_close)) +
+  labs(title = "Attendance vs. Championships Won by Opposing Team",
+       subtitle = "Grouped by if the holidays were within 4 days of the game",
+       x = "Number of Top Jersey Sellers on Opposing Team", 
+       y = "Number of Attendees") + 
+  theme_bw()
+```
+
+
+### Models!
+
+After many hours of data scraping, it is now officially time to start creating my own models. I'm hoping to achieve an $R^2$ value of 0.8, and potentially more.
+
+I plan on making a linear regression, and if time permits, possibly a random forest.
+
+```{r}
+# First up, a basic MLR using most of the variables
+mod1 = lm(attendance ~ all_star_num + pop_team + odds + weekday_status + holiday_close + championships + Follower_Count_mil, data = train_17)
+
+# Check the summary statistics
+summary(mod1)
+# We get a respectable .3377 adjusted R^2 value
+anova(mod1)
+
+# Let's check to see if this is a valid model
+plot(mod1)
+# Note how we do see a mostly normal distribution for the errors, but we cannot assume constant variance
+# There also does not seem to be any bad leverage points, which is a positive
+
+# The model below shows every interaction possible
+mod2 = lm(attendance ~ all_star_num * pop_team * odds * weekday_status*holiday_close * championships, data = train_17)
+
+# Check the statistics
+# summary(mod2)
+# I'll save you the trouble of reading this
+# But I pulled out all the important interactions, and will include them in my model below
+anova(mod2)
+# Let's check the diagnostic plots
+plot(mod2)
+# It looks ok. We can start assuming constant variance here
+
+# Here is a new model with interactions
+mod3 = lm(attendance ~ all_star_num + odds + weekday_status + championships + pop_team + odds:weekday_status + weekday_status:holiday_close + holiday_close:championships + Follower_Count_mil, data = train_17)
+
+summary(mod3)
+anova(mod3)
+vif(mod3)
+
+# Use our transformed data
+mod4 = lm(attendance ~ all_star_num + odds_trans + champ_trans + weekday_status + pop_team + Follower_Count_mil + holiday_close + weekday_status, data = train_17)
+
+summary(mod4)
+anova(mod4)
+
+mod5 = lm(attendance ~ all_star_num + championships + pop_team  + holiday_close:championships, data = train_17)
+
+summary(mod5)
+anova(mod5)
+par(mfrow = c(2, 2))
+plot(mod5)
+```
+
+### Predictions
+
+Using our model 5, which includes the number of all_stars, championships won, how many popular players with high selling jerseys are on the team, and the interaction between having holiday close to gameday and number of championships won, we will predict and check how well our model does.
+
+```{r}
+test_18 = data[data$season == 2018,]
+predictions = predict(mod5, test_18)
+(prediction_differences = real_attendees$attendees - predictions)
+
+
+pred_df = data.frame(predictions, attendees = real_attendees$attendees, prediction_differences)
+
+pred_df = pred_df %>% mutate(error_percentage = abs(prediction_differences / attendees))
+
+ggplot(pred_df, aes(x = error_percentage)) + geom_histogram()
+
+rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+(rmse_model = rmse(pred_df$attendees, pred_df$predictions))
+
+(rmse_null = rmse(pred_df$attendees, mean(pred_df$attendees)))
+
+```
+
+Trial and Error
+
+```{r}
+trial = test_18
+trial$attendance = real_attendees$attendees
+test_18
+
+real_attendees
+
+trial_mod = lm(attendance ~ all_star_num + championships + pop_team  + holiday_close:championships, data = trial)
+
+summary(trial_mod)
+vif(trial_mod)
+anova(trial_mod)
+plot(trial_mod)
+
+
+
+
+```
+
