@@ -1,0 +1,131 @@
+---
+title: "Data Cleanup"
+author: "Linus Jen"
+date: "8/5/2020"
+output: pdf_document
+---
+
+### Packages used
+
+```{r, warning=F, message=F}
+library(readxl) # Reading excel files
+library(writexl) # Writing files as excel files
+library(dplyr) # General data cleanup
+library(stringr) # String Cleanup
+library(lubridate) # To work with dates
+```
+
+### Reading Data In
+
+Note that I stored each sheet as its own data frame, instead of putting them all in a single list object. This way, while more tedious, it does help when cleaning and joining the data tables, so that I know what data is under each sheet.
+
+After looking through the data (as shown below), I found that for the most part, the data was already clean. Thus, there wasn't much cleanup to use, and for that, this section can be skipped. Do note that under the game_data excel file, I did concatenate the data so the game times are properly given.
+
+```{r}
+# Read the sheet names to see which are relevant
+sheet_names = excel_sheets('INSERT DATA HERE.xlsx')
+
+# Read the data in
+team_data = read_excel('INSERT DATA HERE.xlsx', 
+                       sheet = sheet_names[2])
+game_data = read_excel('INSERT DATA HERE.xlsx', 
+                       sheet = sheet_names[3])
+seating_chart = read_excel('INSERT DATA HERE.xlsx', 
+                           sheet = sheet_names[4])
+ticket_price_data = read_excel('INSERT DATA HERE.xlsx', 
+                               sheet = sheet_names[5])
+ticket_scan_data = read_excel('INSERT DATA HERE.xlsx', 
+                              sheet = sheet_names[6])
+
+# Check for NULLs or NAs
+sum(is.na(team_data), is.null(team_data))
+sum(is.na(game_data), is.null(game_data))
+sum(is.na(seating_chart), is.null(seating_chart))
+sum(is.na(ticket_price_data), is.null(ticket_price_data))
+sum(is.na(ticket_scan_data), is.null(ticket_scan_data))
+
+# Seems to be clean!
+
+# Now, check the data types for each column of the data frames
+glimpse(team_data)
+glimpse(game_data)
+glimpse(seating_chart)
+glimpse(ticket_price_data)
+glimpse(ticket_scan_data)
+
+# Notice for game_data, we can combine the Date and Start Time columns to be 1 value
+
+# In addition to combining the date and time, we also need to convert the times
+# to afternoons, and fit the correct time zone, which here is Eastern time
+game_data$GameDate = mdy_hm(paste(str_remove(game_data$Date, '\\w{3},\\s'),
+                                  str_remove(game_data$`Start Time`, 'p')), 
+                            tz = "US/Eastern") + hours(12)
+
+# Change the time zone for the ticket_scan_data columns 
+# scan_datetime (which is in Central) and 
+# event_datetime (which is in Pacific Time)
+
+# Because scan time is in Central time
+ticket_scan_data$scan_datetime = with_tz(
+  # First, we force it into central time
+  force_tz(
+    ticket_scan_data$scan_datetime, 
+    tz = "US/Central"), 
+  # Then, convert the time into Pacific Time
+  tz = "US/Pacific")
+
+# Because event time is already in Pacific time, we only need to force it to change
+ticket_scan_data$event_datetime = force_tz(
+  ticket_scan_data$event_datetime, 
+  tz = "US/Pacific")
+
+# For ticket_scan_data, we should extract the game number so that we can join this later
+ticket_scan_data$game_number = as.numeric(str_extract(str_extract(ticket_scan_data$event_name,
+                                   pattern = 'Game\\s\\d+'), '\\d+'))
+
+# Lastly, we need to extract the opponents played for each game in the 
+# ticket_scan_data dataset
+# Using regex, we find the teams, as they are between the - -, and then
+# remove the -'s and trim the white space
+ticket_scan_data$Opponent = str_extract(ticket_scan_data$event_name,
+                                        pattern = "-\\s.+\\s") %>%
+  str_remove_all("-") %>% 
+  str_trim()
+
+# To ensure no errors popped up
+sum(is.na(ticket_scan_data$Opponent))
+
+# After some errors before, notice that the playoff games reset the counting.
+# Thus, we should make a note if the games is a playoff game or not
+# Do note that when looking through the ticket_scan_data, 
+# the last game present is the last regular home game against the Utah Jazz.
+# Thus, we can confirm that the attendance data does NOT include playoff data
+game_data$playoff = ifelse(str_detect(game_data$`Game Type`, "Playoffs"), TRUE, FALSE)
+
+# Now, save these as their own, separate excel files
+write_xlsx(team_data, 'team_data.xlsx')
+write_xlsx(game_data, 'game_data.xlsx')
+write_xlsx(seating_chart, 'seating_chart.xlsx')
+write_xlsx(ticket_price_data, 'ticket_price_data.xlsx')
+write_xlsx(ticket_scan_data, 'ticket_scan_data.xlsx')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
