@@ -1,4 +1,4 @@
-# Clippers_Home_Game_Attendance
+# Clippers Home Game Attendance
 
 This was part of the first round for the Business Analyst Intern for the Los Angeles Clippers. As a result, the data they provided will not be availabe for use here, but the write-up and all model creations will be included.
 
